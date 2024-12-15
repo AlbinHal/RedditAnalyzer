@@ -1,9 +1,8 @@
 import json
 import requests
-import config
-import utils
 from requests.auth import HTTPBasicAuth
-from classes import Aggregator
+from classes import Aggregator, ApiClient
+from config import TOKEN
 
 # FLAGS
 VERBOSE = True
@@ -12,22 +11,6 @@ VERBOSE = True
 USER_AGENT = "RdtTrends/1.0 (Linux;Python/3.13) (by /u/SpktLaban)"
 RESPONSE_FILE = "response.txt"
 
-def get_oauth_token():
-    """Requests oauth2 token from /api/v1/access-token"""
-    auth = HTTPBasicAuth(config.CLIENT_ID, config.CLIENT_SECRET)
-    data = {
-        "grant_type": "password",
-        "username": config.USERNAME,
-        "password": config.PASSWORD
-    }
-    headers = {"User-Agent": USER_AGENT}
-    response = requests.post(
-        "https://www.reddit.com/api/v1/access_token",
-        auth=auth,
-        data=data,
-        headers=headers
-    ) 
-    return response.json()["access_token"]
 
 
 def limit_rate(header) -> int :
@@ -47,8 +30,9 @@ def main():
 
     response = requests.get(url, headers=headers, params={"limit": 1})
     data = response.json() """
-    agr = Aggregator(Debug=True, DebugPaths=[RESPONSE_FILE])
-
+    #agr = Aggregator(Debug=True, DebugPaths=[RESPONSE_FILE])
+    client = ApiClient(TOKEN)
+    client.subreddit()
 
 if __name__ == "__main__":
     main()

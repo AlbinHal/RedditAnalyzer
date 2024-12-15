@@ -10,3 +10,5 @@ def read_file(fp: str):
 def parse_text(text :str) -> list[str]:
     words = text.lower().split()
     return words
+
+# NETWORKING
