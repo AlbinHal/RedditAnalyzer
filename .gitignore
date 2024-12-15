@@ -1,8 +1,11 @@
 # Secrets
 config.py
+config.json
+token.txt
 
 # Miscellaneous
 *.txt
+*.bak
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
