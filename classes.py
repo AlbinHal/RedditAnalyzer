@@ -1,107 +1,66 @@
+"""Classes for the RedditAnalyzer"""
 from typing import TypeAlias, Literal
-from datetime import datetime, timedelta, date
-from utils import read_file, parse_text, update_json, limit_rate
+from datetime import datetime, timedelta
+from utils import read_file, update_json
 from requests.auth import HTTPBasicAuth
-from requests.compat import urljoin
+from time import sleep
+from collections import Counter
+import pandas as pd
 import requests
-import json
-import time
 
 CONFIG = "config.json"
-AggrMode: TypeAlias = Literal["COMMENT", "SELFTEXT", "BOTH"]
-SubRedditMode : TypeAlias = Literal["old", "new", "hot"]
+SubRedditMode: TypeAlias = Literal["old", "new", "hot"]
+FilePath: TypeAlias = str
 Key: TypeAlias = str
 
 BASE_URL = "https://oauth.reddit.com/"
 
-class Aggregator:
-    def __init__(self, 
-                 Interval: int = 1000,
-                 Mode: AggrMode = "SELFTEXT",
-                 Subreddit: str | None = None,
-                 Start: datetime = date.today() - timedelta(30),
-                 Debug: bool = False,
-                 DebugPaths: list[str] | None = None
-                 ):
-        self.Interval = Interval
-        self.Mode = Mode
-        self.Subreddit = Subreddit
-        self.Start = Start
-        self.Debug = Debug
-        self.DebugPaths = DebugPaths
-        self.client = ApiClient()
-
-        self.map = self.crawl()
-
-    def __str__(self):
-        print(f'Aggregator\nMode: {self.Mode}\nSubreddit: {self.Subreddit}\nStart: {self.Start}\nEnd: {self.End}')
-
-    def crawl(self):
-        completed = False
-        count = 0
-        after = None
-        m : dict[Key,int] = {}
-        words = []
-        while not completed:
-            response = self.client.subreddit(subreddit=self.Subreddit, limit=100, count=count, after=after)
-            after = response.json()['data']['after']
-            for post in response.json()['data']['children']:
-                count += 1
-                date = datetime.fromtimestamp(post['data']['created'])
-                if date <  self.Start or count > 1000:
-                    completed = True
-                    break
-                words.extend(parse_text(post['data']['title'] + post['data']['selftext']))
-            for word in words:
-                m[word] = m.get(word,0) + 1
-            time.sleep(limit_rate(response.headers))
-        return m
-
-
-
-class NestedDict:
-    def __init__(self, 
-            keytype: any = Key,
-            valuetype: any = int
-                 ):
-        self.keytype = keytype
-        self.valuetype = valuetype
-        self.dict : dict[any, dict[any,any]] = {}
-
 
 class ApiClient():
+    """Responsible for interacting with the API, updating auth tokens."""
+
     def __init__(self):
-        self.cfg = read_file(CONFIG)
-        self.__user_agent = self.cfg['user_agent'] 
-        self.__username = self.cfg['username']
-        self.__password = self.cfg['password'] 
-        self.__client_id = self.cfg['client_id'] 
-        self.__client_secret = self.cfg['client_secret'] 
-        self.oauth_token = self.cfg['token']
-        self.oauth_expires = datetime.fromisoformat(self.cfg['token_expires'])
-        self.latest = None
-    
-    def subreddit(self, 
+        cfg: dict = read_file(CONFIG)
+        self.__user_agent = cfg['user_agent']
+        self.__username = cfg['username']
+        self.__password = cfg['password']
+        self.__client_id = cfg['client_id']
+        self.__client_secret = cfg['client_secret']
+        self.__oauth_token = cfg['token']
+        self.oauth_expires = datetime.fromisoformat(cfg['token_expires'])
+
+    def __str__(self):
+        print('ApiClient')
+        print(f'Username : {self.__username}\n')
+        print(f'Token-expires: {self.oauth_expires}')
+
+    def subreddit(self,
                   subreddit: str = "sweden",
                   subredditmode: SubRedditMode = "new",
-                  limit: int = 10,
-                  count: int = 0,
-                  after: str | None = None
-                  ):
+                  count: int = 1000,
+                  ) -> list[dict]:
+        """Get posts from a subreddit of choice"""
+        n = 0
+        posts = []
         url = f'{BASE_URL}r/{subreddit}/{subredditmode}'
-        params = {"limit":limit, "count":count}
-        if after is not None:
-            params["after"] = after
-        response = requests.get(url, headers = self._generate_header() , params=params)
-        if response.status_code != 200:
-            print(f'ApiClient.subreddit: Received {response.status_code}')
-            return response
-        self.latest = response
-        return self.latest
-        
+        params = {"limit": 100 if count > 100 else count}
+        self.update_token()
+        while n < count:
+            response = requests.get(
+                url, headers=self._generate_header(), params=params)
+            if response.status_code != 200:
+                print(f'ApiClient.subreddit: Received {response.status_code}')
+                return posts
+            data = response.json()
+            posts.extend([post["data"] for post in
+                          data.get("data", {}).get("children", [])])
+            n += len(posts)
+            params['after'] = data['data'].get("after", {})
+            self._limit_rate(response.headers)
+        return posts
 
     # OAUTH TOKENS
-    def _update_token(self):
+    def update_token(self) -> None:
         """Checks if the oauth token has expired and updates it accordingly."""
         if self.oauth_expires - timedelta(hours=1) > datetime.today():
             print("No need to update token")
@@ -113,16 +72,16 @@ class ApiClient():
         # Update config.json
         updates = {"token": token, "token_expires": new_expires.isoformat()}
         update_json(CONFIG, updates)
-        self.oauth_token = token
+        self.__oauth_token = token
         self.oauth_expires = new_expires
 
-    def _get_oauth_token(self):
+    def _get_oauth_token(self) -> None:
         """Requests oauth0 token from /api/v1/access-token"""
-        auth = HTTPBasicAuth(self.__client_id, self.__client_secret) 
+        auth = HTTPBasicAuth(self.__client_id, self.__client_secret)
         data = {
             "grant_type": "password",
             "username": self.__username,
-            "password": self.__password 
+            "password": self.__password
         }
         headers = {"User-Agent": self.__user_agent}
         response = requests.post(
@@ -130,13 +89,55 @@ class ApiClient():
             auth=auth,
             data=data,
             headers=headers
-        ) 
+        )
         return response.json()
 
     # HELPER METHODS
-    def _generate_header(self):
-        return {"Authorization": f'bearer {self.oauth_token}',"User-Agent" : self.__user_agent}
+    def _generate_header(self) -> dict:
+        """Returns Auth header used in _get_oauth_token"""
+        return {"Authorization": f'bearer {self.__oauth_token}',
+                "User-Agent": self.__user_agent}
 
-""" class Post(raw):
+    def _limit_rate(self, header: dict) -> None:
+        """Simply sleep if we are getting close to exceeding rate."""
+        remaining = header.get("x-ratelimit-remaining", 0)
+        if float(remaining) < 100:
+            sleep(1)
+        return
+
+
+class DataProcessor():
+    def __init__(self, clean_str: bool = True):
+        self.__clean_str = clean_str
+
+    def __str__(self):
+
+        ...
+
+    def word_count(self, dataset: dict | FilePath) -> pd.DataFrame:
+        words = []
+        for post in dataset:
+            title = post.get("title", "")
+            selftext = post.get("selftext", "")
+            words.extend(self.clean_str(title).split())
+            words.extend(self.clean_str(selftext).split())
+        wc = Counter(words)
+        return pd.DataFrame(wc.items(), columns=["Word", "Count"]).sort_values(by="Count", ascending=False)
+
+    def clean_str(self, s: str) -> str:
+        if not self.__clean_str:
+            return s
+        new_str = ''.join(c.lower() for c in s if c.isalpha() or c == " ")
+        return new_str
+
+
+class Visualizer():
+    """Handles graph creation"""
+
     def __init__(self):
-         """
+        ...
+
+
+class AppManager():
+    def __init__(self, ApiClient, DataProcessor, Visualizer):
+        ...
