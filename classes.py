@@ -30,9 +30,11 @@ class ApiClient():
         self.oauth_expires = datetime.fromisoformat(cfg['token_expires'])
 
     def __str__(self):
-        print('ApiClient')
-        print(f'Username : {self.__username}\n')
-        print(f'Token-expires: {self.oauth_expires}')
+        s = "ApiClient\n" + \
+            f'Username: {self.__username}\n' + \
+            f'Token-expires: {self.oauth_expires}'
+
+        return s
 
     def subreddit(self,
                   subreddit: str = "sweden",
@@ -54,10 +56,11 @@ class ApiClient():
             data = response.json()
             posts.extend([post["data"] for post in
                           data.get("data", {}).get("children", [])])
-            n += len(posts)
+            n += len(posts) - n
             params['after'] = data['data'].get("after", {})
             self._limit_rate(response.headers)
-        return posts
+        print(n)
+        return posts[:count-1]
 
     # OAUTH TOKENS
     def update_token(self) -> None:
@@ -107,14 +110,18 @@ class ApiClient():
 
 
 class DataProcessor():
-    def __init__(self, clean_str: bool = True):
-        self.__clean_str = clean_str
+    def __init__(self, clean_str: bool = True, dataset: list[dict] | FilePath = []):
+        self.__clean_str: str = clean_str
+        if type(dataset) is FilePath:
+            self.dataset = self.load_dataset(dataset)
+        else:
+            self.dataset = pd.DataFrame(dataset)
 
     def __str__(self):
 
         ...
 
-    def word_count(self, dataset: dict | FilePath) -> pd.DataFrame:
+    def word_count(self, dataset: list[dict]) -> pd.DataFrame:
         words = []
         for post in dataset:
             title = post.get("title", "")
@@ -124,11 +131,25 @@ class DataProcessor():
         wc = Counter(words)
         return pd.DataFrame(wc.items(), columns=["Word", "Count"]).sort_values(by="Count", ascending=False)
 
+    def num_posts(self) -> int:
+        return len(self.dataset)
+
+    def vote_ratio(self, dataset: list[dict] | FilePath) -> float:
+        data = pd.DataFrame(dataset)
+        data['vote_ratio'] = data['ups'] / (data['downs'] + 1)
+        return data['vote_ratio'].sort_values(ascending=False)
+
     def clean_str(self, s: str) -> str:
         if not self.__clean_str:
             return s
         new_str = ''.join(c.lower() for c in s if c.isalpha() or c == " ")
         return new_str
+
+    def load_dataset(self, fp: FilePath):
+        return pd.read_csv(fp)
+
+    def store_dataset(self, name: str = "out"):
+        self.dataset.to_csv(f'{name}.csv', index=False)
 
 
 class Visualizer():

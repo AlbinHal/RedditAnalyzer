@@ -3,6 +3,9 @@ config.py
 config.json
 token.txt
 
+
+# Data
+*.csv
 # Miscellaneous
 *.txt
 *.bak

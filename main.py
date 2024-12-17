@@ -11,10 +11,11 @@ USER_AGENT = "RdtTrends/1.0 (Linux;Python/3.13) (by /u/SpktLaban)"
 def main():
     """Main"""
     c = ApiClient()
-    dp = DataProcessor()
-    data = c.subreddit()
-    wc = dp.word_count(data)
-    print(wc)
+    print(c)
+    data: list[dict] = c.subreddit("AmItheAsshole")
+    dp = DataProcessor(dataset=data)
+    print(dp.word_count(data))
+    dp.store_dataset("aita")
 
 
 if __name__ == "__main__":
