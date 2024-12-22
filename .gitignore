@@ -6,6 +6,7 @@ token.txt
 
 # Data
 *.csv
+*.csv#
 # Miscellaneous
 *.txt
 *.bak

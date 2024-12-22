@@ -1,17 +1,16 @@
 """Classes for the RedditAnalyzer"""
-from typing import TypeAlias, Literal
 from datetime import datetime, timedelta
-from utils import read_file, update_json
+from utils import SubRedditMode, FilePath, read_file, update_json
 from requests.auth import HTTPBasicAuth
 from time import sleep
 from collections import Counter
+from os.path import isfile
+import matplotlib.pyplot as plt
 import pandas as pd
 import requests
 
 CONFIG = "config.json"
-SubRedditMode: TypeAlias = Literal["old", "new", "hot"]
-FilePath: TypeAlias = str
-Key: TypeAlias = str
+
 
 BASE_URL = "https://oauth.reddit.com/"
 
@@ -59,8 +58,7 @@ class ApiClient():
             n += len(posts) - n
             params['after'] = data['data'].get("after", {})
             self._limit_rate(response.headers)
-        print(n)
-        return posts[:count-1]
+        return posts[:count + 1]
 
     # OAUTH TOKENS
     def update_token(self) -> None:
@@ -110,45 +108,49 @@ class ApiClient():
 
 
 class DataProcessor():
-    def __init__(self, clean_str: bool = True, dataset: list[dict] | FilePath = []):
+    def __init__(self, clean_str: bool = True, dataset: list[dict] | FilePath | None = None):
         self.__clean_str: str = clean_str
         if type(dataset) is FilePath:
             self.dataset = self.load_dataset(dataset)
-        else:
+        elif type(dataset) is list[dict]:
             self.dataset = pd.DataFrame(dataset)
 
     def __str__(self):
 
         ...
 
-    def word_count(self, dataset: list[dict]) -> pd.DataFrame:
+    def word_count(self) -> pd.DataFrame:
         words = []
-        for post in dataset:
-            title = post.get("title", "")
-            selftext = post.get("selftext", "")
-            words.extend(self.clean_str(title).split())
-            words.extend(self.clean_str(selftext).split())
+        for _, post in self.dataset.iterrows():
+            title = post['title']
+            selftext = post['selftext']
+            words.extend(self._clean_str(title).split())
+            words.extend(self._clean_str(selftext).split())
         wc = Counter(words)
         return pd.DataFrame(wc.items(), columns=["Word", "Count"]).sort_values(by="Count", ascending=False)
 
     def num_posts(self) -> int:
         return len(self.dataset)
 
-    def vote_ratio(self, dataset: list[dict] | FilePath) -> float:
-        data = pd.DataFrame(dataset)
-        data['vote_ratio'] = data['ups'] / (data['downs'] + 1)
-        return data['vote_ratio'].sort_values(ascending=False)
+    def vote_ratio(self) -> float:
+        self.dataset['vote_ratio'] = self.dataset['ups'] / (self.dataset['downs'] + 1)
+        return self.dataset['vote_ratio'].sort_values(ascending=False)
 
-    def clean_str(self, s: str) -> str:
+    def _clean_str(self, s: str) -> str:
         if not self.__clean_str:
             return s
         new_str = ''.join(c.lower() for c in s if c.isalpha() or c == " ")
         return new_str
 
-    def load_dataset(self, fp: FilePath):
-        return pd.read_csv(fp)
+    def load_dataset(self, fp: FilePath) -> None:
+        """Loads a .csv into a Dataframe, store in Dataprocessor"""
+        if not isfile(fp):
+            # Error msg
+            return None
+        self.dataset = pd.read_csv(fp)
 
     def store_dataset(self, name: str = "out"):
+        """Store actual Dataframe into .csv"""
         self.dataset.to_csv(f'{name}.csv', index=False)
 
 
@@ -156,7 +158,12 @@ class Visualizer():
     """Handles graph creation"""
 
     def __init__(self):
-        ...
+        return
+
+    def draw_histogram(self, dataset: pd.DataFrame,
+                       title, key: str = 'num_comments') -> None:
+        dataset[key].plot(kind='hist', bins=20, title=title)
+        plt.savefig(f'aita.png')
 
 
 class AppManager():

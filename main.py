@@ -1,27 +1,24 @@
 import requests
-from classes import ApiClient, DataProcessor
+import argparse
+import logging
+from classes import ApiClient, DataProcessor, Visualizer
 
 # FLAGS
 VERBOSE = True
+GUI = False
 
 # PARAMETERS
 USER_AGENT = "RdtTrends/1.0 (Linux;Python/3.13) (by /u/SpktLaban)"
 
 
-def main():
-    """Main"""
-    c = ApiClient()
-    print(c)
-    data: list[dict] = c.subreddit("AmItheAsshole")
-    dp = DataProcessor(dataset=data)
-    print(dp.word_count(data))
-    dp.store_dataset("aita")
-
-
-if __name__ == "__main__":
-    main()
-
 RESPONSE_FILE = "response.txt"
+
+
+
+def setup_logger(name: str = __name__) -> logging.Logger:
+    logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    logging.root.setLevel(logging.DEBUG)
+    return logging.getLogger(name)
 
 
 def test():
@@ -35,3 +32,17 @@ def test():
     response = requests.get(url, headers=headers, params={"limit": 1})
     data = response.json()
     print(data)
+
+def main():
+    """Main"""
+    log = setup_logger("main")
+    log.debug("Creating ApiClient")
+    c = ApiClient()
+    dp = DataProcessor()
+    dp.load_dataset('aita.csv')
+    print(dp.word_count())
+    vs = Visualizer()
+    vs.draw_histogram(dp.dataset, title="Num Votes")
+
+if __name__ == "__main__":
+    main()
