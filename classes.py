@@ -1,10 +1,13 @@
 """Classes for the RedditAnalyzer"""
 from datetime import datetime, timedelta
-from utils import SubRedditMode, FilePath, read_file, update_json
+from utils import SubRedditMode, FilePath, read_file, update_json, save_json, get_input
 from requests.auth import HTTPBasicAuth
 from time import sleep
 from collections import Counter
 from os.path import isfile
+from matplotlib import style
+from rich.console import Console
+from rich import print as rprint
 import matplotlib.pyplot as plt
 import pandas as pd
 import requests
@@ -27,6 +30,7 @@ class ApiClient():
         self.__client_secret = cfg['client_secret']
         self.__oauth_token = cfg['token']
         self.oauth_expires = datetime.fromisoformat(cfg['token_expires'])
+        self.update_token
 
     def __str__(self):
         s = "ApiClient\n" + \
@@ -35,7 +39,7 @@ class ApiClient():
 
         return s
 
-    def subreddit(self,
+    def get_posts_by_subreddit(self,
                   subreddit: str = "sweden",
                   subredditmode: SubRedditMode = "new",
                   count: int = 1000,
@@ -59,6 +63,17 @@ class ApiClient():
             params['after'] = data['data'].get("after", {})
             self._limit_rate(response.headers)
         return posts[:count + 1]
+    
+    def subreddit_autocomplete(self, query: str, show_nsfw: bool) -> list[str]:
+        url = f'{BASE_URL}/api/subreddit_autocomplete'
+        params = {"query": query, "include_over_18": show_nsfw,
+                  "include_profiles": False}
+        response = requests.get(url, headers=self._generate_header(),
+                                params=params)
+        data = response.json()
+        save_json(data, f'searches/subr_search_{query}') 
+        return [subreddit.get("name", "") for subreddit in data.get("subreddits", [])]
+        
 
     # OAUTH TOKENS
     def update_token(self) -> None:
@@ -91,7 +106,7 @@ class ApiClient():
             data=data,
             headers=headers
         )
-        return response.json()
+        return  
 
     # HELPER METHODS
     def _generate_header(self) -> dict:
@@ -129,6 +144,16 @@ class DataProcessor():
         wc = Counter(words)
         return pd.DataFrame(wc.items(), columns=["Word", "Count"]).sort_values(by="Count", ascending=False)
 
+    def posts_by_users(self) -> pd.DataFrame:
+        users: dict[str, list[str]]
+        for _,post in self.dataset.iterrows():
+            user = post['author']
+            if user not in users:
+                users[user] = []
+            users[users].append(user)
+        uc_df = pd.DataFrame(users, columns=["User", "Posts"])
+
+    
     def num_posts(self) -> int:
         return len(self.dataset)
 
@@ -149,15 +174,18 @@ class DataProcessor():
             return None
         self.dataset = pd.read_csv(fp)
 
-    def store_dataset(self, name: str = "out"):
-        """Store actual Dataframe into .csv"""
-        self.dataset.to_csv(f'{name}.csv', index=False)
+    def store_dataset(self, dataset: pd.DataFrame | None = None, name: str = "out"):
+        """Store Dataframe into .csv, if none specified, store main dataframe"""
+        if dataset is None:
+            self.dataset.to_csv(f'{name}.csv', index=False)
+        else:
+            dataset.to_csv(f'{name}.csv', index=False)
 
 
 class Visualizer():
     """Handles graph creation"""
-
-    def __init__(self):
+    def __init__(self, style):
+        plt.style.use(style)
         return
 
     def draw_histogram(self, dataset: pd.DataFrame,
@@ -167,5 +195,50 @@ class Visualizer():
 
 
 class AppManager():
-    def __init__(self, ApiClient, DataProcessor, Visualizer):
-        ...
+    def __init__(self, ApiClient : ApiClient, DataProcessor : DataProcessor, Visualizer: Visualizer):
+        self.ApiClient = ApiClient
+        self.DataProcessor = DataProcessor
+        self.Visualizer = Visualizer
+        self.Parameters = Parameters()
+        self.Cli = Console()
+
+    def run(self):
+        while True:
+            self._draw_main_menu()
+            match get_input():
+                case "1":
+                    self.Parameters = get_input('Enter subreddit name')
+                case "2":
+                    self._search_subreddits()
+                case "3":
+                    ...
+                case "4":
+                    rprint("Goodbye")
+                    break
+                case _: rprint("Input Error")
+        return
+    def _search_subreddits(self):
+        self.Cli.clear()
+        self.Cli.rule("[bold red]Search Subreddits")
+        rprint("Enter query")
+        s = get_input()
+        with self.Cli.status("Searching..."):
+            subs = self.ApiClient.subreddit_autocomplete(s, True)
+        rprint(subs)
+        self._hold()
+
+
+    def _draw_main_menu(self):
+        self.Cli.clear()
+        self.Cli.rule("[bold red]RedditAnalyzer")
+        rprint("1. Change subreddit")
+        rprint("2. Search Subreddits")
+        rprint("3. Display subreddit stats")
+        rprint("4. Exit")
+
+    def _hold(self) -> None:
+        input("Press ENTER to continue")
+
+class Parameters():
+    def __init__(self, subreddit: str | None = None):
+        self.subreddit = subreddit

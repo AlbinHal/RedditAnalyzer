@@ -1,7 +1,7 @@
 import requests
 import argparse
 import logging
-from classes import ApiClient, DataProcessor, Visualizer
+from classes import ApiClient, DataProcessor, Visualizer, AppManager
 
 # FLAGS
 VERBOSE = True
@@ -9,15 +9,13 @@ GUI = False
 
 # PARAMETERS
 USER_AGENT = "RdtTrends/1.0 (Linux;Python/3.13) (by /u/SpktLaban)"
-
-
 RESPONSE_FILE = "response.txt"
 
 
 
 def setup_logger(name: str = __name__) -> logging.Logger:
     logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    logging.root.setLevel(logging.DEBUG)
+    logging.root.setLevel(logging.INFO)
     return logging.getLogger(name)
 
 
@@ -36,13 +34,12 @@ def test():
 def main():
     """Main"""
     log = setup_logger("main")
-    log.debug("Creating ApiClient")
-    c = ApiClient()
+    ac = ApiClient()
     dp = DataProcessor()
-    dp.load_dataset('aita.csv')
-    print(dp.word_count())
-    vs = Visualizer()
-    vs.draw_histogram(dp.dataset, title="Num Votes")
+    vs = Visualizer('dark_background')
+    app = AppManager(ApiClient=ac, DataProcessor=dp, Visualizer=vs)
+    app.run()
+
 
 if __name__ == "__main__":
     main()
