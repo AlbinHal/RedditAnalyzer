@@ -8,10 +8,14 @@ token.txt
 *.csv
 *.csv#
 /searches/*
+
 # Miscellaneous
 *.txt
 *.bak
 layout.md
+*.png
+
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

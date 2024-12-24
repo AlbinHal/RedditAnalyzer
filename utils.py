@@ -2,13 +2,22 @@
 from os.path import isfile
 from json import load, dump
 from typing import TypeAlias, Literal
-import logging
-
+import os
 
 SubRedditMode: TypeAlias = Literal["old", "new", "hot"]
 FilePath: TypeAlias = str
 Key: TypeAlias = str
+
 # FILE HANDLING
+def makedir(name:str) -> None:
+    try:
+        os.mkdir(name)
+    except FileExistsError:
+        return
+    except PermissionError:
+        print(f"Permission denied: Unable to create '{name}'.")
+    except Exception as e:
+        print(f"An error occurred: {e}")
 
 
 def read_file(fp: str):
@@ -51,4 +60,4 @@ def limit_rate(header) -> int:
     return 0
 
 def get_input(prompt: str | None = None):
-    return input(">>") if prompt is None else input(f'{prompt}>> ')
+    return input(">> ") if prompt is None else input(f'{prompt}>> ')
