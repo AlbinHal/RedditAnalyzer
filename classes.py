@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import requests
 import os
+import warnings
 
 CONFIG = "config.json"
 
@@ -33,7 +34,7 @@ class ApiClient():
         self.__oauth_token = cfg['token']
         self.oauth_expires = datetime.fromisoformat(cfg['token_expires'])
         self.rate_remaining = 1000
-        self.update_token
+        self.update_token()
 
     def __str__(self):
         s = "ApiClient\n" + \
@@ -46,13 +47,22 @@ class ApiClient():
                   subreddit: str = "sweden",
                   subredditmode: SubRedditMode = "new",
                   count: int = 1000,
+                  before: str | None = None
                   ) -> list[dict]:
         """Get posts from a subreddit of choice"""
+        self.update_token()
         n = 0
         posts = []
         url = f'{BASE_URL}r/{subreddit}/{subredditmode}'
         params = {"limit": 100 if count > 100 else count}
-        self.update_token()
+
+        if before is not None:
+            page_key = 'before'
+            params[page_key] = before
+        else:
+            page_key = 'after'
+
+
         while n < count:
             response = requests.get(
                 url, headers=self._generate_header(), params=params)
@@ -63,9 +73,11 @@ class ApiClient():
             posts.extend([post["data"] for post in
                           data.get("data", {}).get("children", [])])
             n += len(posts) - n
-            params['after'] = data['data'].get("after", {})
+            if params.get(page_key, "") == data['data'].get(page_key, ""):
+                break
+            params[page_key] = data['data'].get(page_key, {})
             self._limit_rate(response.headers)
-        return posts[:count + 1]
+        return posts[:count]
     
     def subreddit_autocomplete(self, query: str, show_nsfw: bool) -> list[str]:
         """Used to search for subreddits after a given query"""
@@ -125,11 +137,11 @@ class ApiClient():
         return {"Authorization": f'bearer {self.__oauth_token}',
                 "User-Agent": self.__user_agent}
 
-    def _limit_rate(self, header: dict | None = None) -> None:
+    def _limit_rate(self, header: dict) -> None:
         """Simply sleep if we are getting close to exceeding rate."""
-        self._remaining = header.get("x-ratelimit-remaining", 0)
+        self.remaining = header.get("x-ratelimit-remaining", 0)
         refresh = header.get("x-ratelimit-reset", 600)
-        if float(remaining) < 100:
+        if float(self.remaining) < 100:
             sleep(1)
         return
 
@@ -175,8 +187,8 @@ class DataProcessor():
         self.dataset['vote_ratio'] = self.dataset['ups'] / (self.dataset['downs'] + 1)
         return self.dataset['vote_ratio'].sort_values(ascending=False)
 
-    def newest_id(self) -> str:
-        return self.dataset.loc[self.dataset['created_utc'].idxmax(), 'id']
+    def newest_timestamp(self) -> str:
+        return self.dataset.loc[self.dataset['created_utc'].idxmax(), 'created_utc']
 
     def _clean_str(self, s: str) -> str:
         if not self.__clean_str:
@@ -193,6 +205,14 @@ class DataProcessor():
             # Error msg
             return None
         self.dataset = pd.read_csv(fp).sort_values(by="created_utc", ascending=False)
+    
+    def append_dataset(self, dataset: pd.DataFrame) -> None:
+        # TODO, fix (probable) bug where we try to append an all N/A dataframe.
+        # Suppress warning for now.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=FutureWarning)
+            dataset = dataset.reindex(columns=self.dataset.columns)
+            self.dataset = pd.concat([self.dataset, dataset], ignore_index=True).sort_values(by="created_utc", ascending=False)
 
     def store_dataset(self, dataset: pd.DataFrame | None = None, name: str = "out"):
         """Store Dataframe into .csv, if none specified, store main dataframe"""
@@ -291,12 +311,29 @@ class CacheAppManager():
         latest = {}
         for sub in self.subreddits:
            self.DataProcessor.load_dataset(f'{CACHE_FILEPATH}/{sub}.csv')
-           latest[sub] = self.DataProcessor.newest_id()
-        print(latest)
+           latest[sub] = self.DataProcessor.newest_timestamp()
+        while True:
+            print(datetime.now())
+            for sub, latest_timestamp in latest.items():
+                newer = []
+                data = self.ApiClient.get_posts_by_subreddit(sub, count=20)
+                for post in data:
+                    if post['created_utc'] > latest_timestamp:
+                        newer.append(post)
+                if len(newer) > 0: 
+                    # TODO, optimize this!!
+                    print(f'\n{sub}: {[post.get("title", "") for post in newer]}\n')
+                    self.DataProcessor.load_dataset(f'{CACHE_FILEPATH}/{sub}.csv')
+                    self.DataProcessor.append_dataset(pd.DataFrame(newer))
+                    self.DataProcessor.store_dataset(name=sub)
+                    latest[sub] = newer[0]['created_utc']
+                print(f'Fetched {len(newer)} newer posts from r/{sub}')
+            print("----------")
+            sleep(300) # Sleep for 5 minutes
         print("Done")
 
     def _cache_initial(self, subreddit:str) -> None:
-        print(f'Caching {subreddit}...')
+        print(f'Caching r/{subreddit}...')
         data = self.ApiClient.get_posts_by_subreddit(subreddit=subreddit, count=1000)
         self.DataProcessor.load_dataset(data)
         self.DataProcessor.store_dataset(name = subreddit)
