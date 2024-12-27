@@ -24,14 +24,20 @@ def main():
     """Parse arguments and launch correct Manager class"""
     ac = ApiClient()
     dp = DataProcessor()
+    vi = Visualizer('dark_background')
     log = setup_logger("main")
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--cachemode", nargs='*',help="Have redditanalyzer continously run and save posts")
+    parser.add_argument("--subreddit", type=str, help="This subreddit will be fetched on startup")
     args = parser.parse_args()
     if args.cachemode is not None:
         app = CacheAppManager(ac, dp, args.cachemode)
-        app.run()
+    if args.subreddit is not None:
+        app = CliAppManager(ac,dp,vi, args.subreddit)
+    else:
+        app = CliAppManager(ac,dp,vi)
+    app.run()
 
     #vs = Visualizer('dark_background')
     #app = CliAppManager(ApiClient=ac, DataProcessor=dp, Visualizer=vs)

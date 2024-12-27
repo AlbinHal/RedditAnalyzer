@@ -5,7 +5,7 @@ from requests.auth import HTTPBasicAuth
 from time import sleep
 from collections import Counter
 from os.path import isfile
-from matplotlib import style
+import matplotlib
 from rich.console import Console
 from rich import print as rprint
 import matplotlib.pyplot as plt
@@ -20,6 +20,10 @@ BASE_URL = "https://oauth.reddit.com/"
 
 CACHE_FILEPATH = "saved"
 
+def cached_csv_exists(sub:str) -> bool:
+    if sub is None:
+        return False
+    return os.path.isfile(f'{CACHE_FILEPATH}/{sub}.csv')
 
 class ApiClient():
     """Responsible for interacting with the API, updating auth tokens."""
@@ -44,11 +48,11 @@ class ApiClient():
         return s
 
     def get_posts_by_subreddit(self,
-                  subreddit: str = "sweden",
-                  subredditmode: SubRedditMode = "new",
-                  count: int = 1000,
-                  before: str | None = None
-                  ) -> list[dict]:
+                               subreddit: str = "sweden",
+                               subredditmode: SubRedditMode = "new",
+                               count: int = 1000,
+                               before: str | None = None
+                               ) -> list[dict]:
         """Get posts from a subreddit of choice"""
         self.update_token()
         n = 0
@@ -61,7 +65,6 @@ class ApiClient():
             params[page_key] = before
         else:
             page_key = 'after'
-
 
         while n < count:
             response = requests.get(
@@ -77,8 +80,10 @@ class ApiClient():
                 break
             params[page_key] = data['data'].get(page_key, {})
             self._limit_rate(response.headers)
-        return posts[:count]
-    
+        ret = []
+        [ret.append(post) for post in posts[:count] if post not in ret]
+        return ret
+
     def subreddit_autocomplete(self, query: str, show_nsfw: bool) -> list[str]:
         """Used to search for subreddits after a given query"""
         url = f'{BASE_URL}/api/subreddit_autocomplete'
@@ -87,25 +92,26 @@ class ApiClient():
         response = requests.get(url, headers=self._generate_header(),
                                 params=params)
         data = response.json()
-        save_json(data, f'searches/{query}_subr_search.json') 
+        save_json(data, f'searches/{query}_subr_search.json')
         return [subreddit.get("name", "") for subreddit in data.get("subreddits", [])]
-        
-    def subreddit_exists(self, query:str) -> bool:
+
+    def subreddit_exists(self, query: str) -> bool:
         self.update_token()
         url = f'{BASE_URL}/r/{query}/about.json'
-        response = requests.get(url=url, headers=self._generate_header()) 
+        response = requests.get(url=url, headers=self._generate_header())
         data = response.json()
         if response.status_code == 200:
             return data.get("kind") == "t5"
         else:
             return False
     # OAUTH TOKENS
+
     def update_token(self) -> None:
         """Checks if the oauth token has expired and updates it accordingly."""
         if self.oauth_expires - timedelta(hours=1) > datetime.today():
             return
         resp = self._get_oauth_token()
-        token = resp['access_token']
+        token = resp.get("access_token")
         time_remaining = resp['expires_in']
         new_expires = datetime.today() + timedelta(seconds=time_remaining)
         # Update config.json
@@ -114,7 +120,7 @@ class ApiClient():
         self.__oauth_token = token
         self.oauth_expires = new_expires
 
-    def _get_oauth_token(self) -> None:
+    def _get_oauth_token(self):
         """Requests oauth0 token from /api/v1/access-token"""
         auth = HTTPBasicAuth(self.__client_id, self.__client_secret)
         data = {
@@ -129,7 +135,7 @@ class ApiClient():
             data=data,
             headers=headers
         )
-        return  
+        return response.json()
 
     # HELPER METHODS
     def _generate_header(self) -> dict:
@@ -153,7 +159,7 @@ class DataProcessor():
             self.dataset = self.load_dataset(dataset)
         elif type(dataset) is list[dict]:
             self.dataset = pd.DataFrame(dataset)
-        else: 
+        else:
             self.dataset = []
 
     def __str__(self):
@@ -171,21 +177,24 @@ class DataProcessor():
         return pd.DataFrame(wc.items(), columns=["Word", "Count"]).sort_values(by="Count", ascending=False)
 
     def posts_by_users(self) -> pd.DataFrame:
-        users: dict[str, list[str]]
-        for _,post in self.dataset.iterrows():
-            user = post['author']
-            if user not in users:
-                users[user] = []
-            users[users].append(user)
-        uc_df = pd.DataFrame(users, columns=["User", "Posts"])
+        """Returns a DataFrame mapping each user to their posts and the number of posts."""
+        grouped = self.dataset.groupby('author')['title'].apply(list).reset_index()
+        grouped.columns = ['user', 'posts']
+        grouped['num_posts'] = grouped['posts'].str.len()
+        grouped = grouped.sort_values(by='num_posts', ascending=False).reset_index(drop=True)
 
-    
+        return grouped
+
+    def submission_times_by_hour(self):
+        self.dataset['hour_of_day'] = pd.to_datetime(self.dataset['created_utc'], unit='s').dt.hour
+        posts_by_hour = self.dataset['hour_of_day'].value_counts().sort_index()
+        return posts_by_hour
+
     def num_posts(self) -> int:
         return len(self.dataset)
-    
-    def vote_ratio(self) -> float:
-        self.dataset['vote_ratio'] = self.dataset['ups'] / (self.dataset['downs'] + 1)
-        return self.dataset['vote_ratio'].sort_values(ascending=False)
+
+    def vote_ratio(self):
+        return self.dataset['upvote_ratio'].sort_values(ascending=False)
 
     def newest_timestamp(self) -> str:
         return self.dataset.loc[self.dataset['created_utc'].idxmax(), 'created_utc']
@@ -199,20 +208,23 @@ class DataProcessor():
     def load_dataset(self, fp: FilePath | list[dict]) -> None:
         """Loads a .csv into a Dataframe, store in Dataprocessor"""
         if type(fp) is list:
-            self.dataset = pd.DataFrame(fp).sort_values(by="created_utc", ascending=False)
+            self.dataset = pd.DataFrame(fp).sort_values(
+                by="created_utc", ascending=False)
             return
         if not isfile(fp):
             # Error msg
             return None
-        self.dataset = pd.read_csv(fp).sort_values(by="created_utc", ascending=False)
-    
+        self.dataset = pd.read_csv(fp).sort_values(
+            by="created_utc", ascending=False)
+
     def append_dataset(self, dataset: pd.DataFrame) -> None:
         # TODO, fix (probable) bug where we try to append an all N/A dataframe.
         # Suppress warning for now.
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=FutureWarning)
             dataset = dataset.reindex(columns=self.dataset.columns)
-            self.dataset = pd.concat([self.dataset, dataset], ignore_index=True).sort_values(by="created_utc", ascending=False)
+            self.dataset = pd.concat([self.dataset, dataset], ignore_index=True).sort_values(
+                by="created_utc", ascending=False)
 
     def store_dataset(self, dataset: pd.DataFrame | None = None, name: str = "out"):
         """Store Dataframe into .csv, if none specified, store main dataframe"""
@@ -221,28 +233,36 @@ class DataProcessor():
         else:
             dataset.to_csv(f'{CACHE_FILEPATH}/{name}.csv', index=False)
 
+    def dataset_remove_duplicates(self):
+        self.dataset.drop_duplicates()
+
 
 class Visualizer():
     """Handles graph creation"""
-    def __init__(self, style):
+    def __init__(self, style = 'dark_background'):
+        matplotlib.use('TkAgg')
         plt.style.use(style)
         return
 
     def draw_histogram(self, dataset: pd.DataFrame,
-                       title, key: str = 'num_comments') -> None:
-        dataset[key].plot(kind='hist', bins=20, title=title)
-        plt.savefig(f'aita.png')
+                       title) -> None:
+        dataset.plot(kind='hist', bins=20, title=title)
 
+    def draw_bargraph(self, dataset: pd.DataFrame, title: str = None) -> None:
+        dataset.plot(kind='bar', title=title)
+        plt.show()
 
 class CliAppManager():
-    def __init__(self, ApiClient : ApiClient, DataProcessor : DataProcessor, Visualizer: Visualizer):
+    def __init__(self, ApiClient: ApiClient, DataProcessor: DataProcessor, Visualizer: Visualizer, Subreddit: str | None= None):
         self.ApiClient = ApiClient
         self.DataProcessor = DataProcessor
         self.Visualizer = Visualizer
-        self.Parameters = Parameters()
+        self.Parameters = Parameters(Subreddit)
         self.Cli = Console()
 
+
     def run(self):
+        self._load_subreddit()    
         while True:
             self._draw_main_menu()
             match get_input():
@@ -257,17 +277,22 @@ class CliAppManager():
                     break
                 case _: rprint("Input Error")
         return
+
     def _display_stats(self):
         self.Cli.clear()
         self.Cli.rule("[bold red]RedditAnalyzer")
         rprint(f'[yellow]/r/[bold blue]{self.Parameters.subreddit} ', end="")
-        rprint(f'Number of posts fetched: [bold blue]{self.DataProcessor.num_posts()}')
+        rprint(
+            f'Number of posts fetched: [bold blue]{self.DataProcessor.num_posts()}')
+        rprint("Most active users:")
+        rprint(self.DataProcessor.posts_by_users())
+        self.Visualizer.draw_bargraph(
+            self.DataProcessor.submission_times_by_hour(), "Submission times by hour")
         self._hold()
+
     def _change_subreddit(self):
         self.Parameters.subreddit = get_input("Enter subreddit")
-        with self.Cli.status("Fetching posts..."):
-            data = self.ApiClient.get_posts_by_subreddit(subreddit=self.Parameters.subreddit) 
-        self.DataProcessor.load_dataset(data)
+        self._load_subreddit()
 
     def _search_subreddits(self):
         self.Cli.clear()
@@ -278,7 +303,6 @@ class CliAppManager():
             subs = self.ApiClient.subreddit_autocomplete(s, True)
         rprint(subs)
         self._hold()
-
 
     def _draw_main_menu(self):
         self.Cli.clear()
@@ -291,62 +315,87 @@ class CliAppManager():
 
     def _draw_params(self):
         sub_color = "bold red" if self.Parameters.subreddit is None else "bold blue"
-        rprint(f'Current Subreddit: [{sub_color}]{self.Parameters.subreddit}' )
+        rprint(f'Current Subreddit: r/[{sub_color}]{self.Parameters.subreddit}')
 
-
+    def _load_subreddit(self):
+         with self.Cli.status("Fetching posts..."):
+            if cached_csv_exists(self.Parameters.subreddit):
+                self.DataProcessor.load_dataset(f'{CACHE_FILEPATH}/{self.Parameters.subreddit}.csv')
+            else:
+                data = self.ApiClient.get_posts_by_subreddit(
+                    subreddit=self.Parameters.subreddit)
+                self.DataProcessor.load_dataset(data)
     def _hold(self) -> None:
         input("Press ENTER to continue")
 
+
 class CacheAppManager():
-    def __init__(self, ApiClient: ApiClient, DataProcessor: DataProcessor, subreddits:list[str]):
+    def __init__(self, ApiClient: ApiClient, DataProcessor: DataProcessor, subreddits: list[str]):
         self.ApiClient = ApiClient
         self.DataProcessor = DataProcessor
-        self.subreddits = subreddits 
+        self.subreddits = subreddits
 
     def run(self) -> None:
         makedir(CACHE_FILEPATH)
+        count_gen = self._count_gen()
         self._check_subreddits_valid()
         for sub in [sub for sub in self.subreddits if sub not in self._get_cached()]:
             self._cache_initial(sub)
         latest = {}
         for sub in self.subreddits:
-           self.DataProcessor.load_dataset(f'{CACHE_FILEPATH}/{sub}.csv')
-           latest[sub] = self.DataProcessor.newest_timestamp()
+            self.DataProcessor.load_dataset(f'{CACHE_FILEPATH}/{sub}.csv')
+            latest[sub] = self.DataProcessor.newest_timestamp()
         while True:
             print(datetime.now())
+            max: int = 0
+            count: int = next(count_gen)
             for sub, latest_timestamp in latest.items():
                 newer = []
-                data = self.ApiClient.get_posts_by_subreddit(sub, count=20)
+                data: list[dict] = self.ApiClient.get_posts_by_subreddit(
+                    sub, count=count)
                 for post in data:
                     if post['created_utc'] > latest_timestamp:
                         newer.append(post)
-                if len(newer) > 0: 
+                if len(newer) > 0:
                     # TODO, optimize this!!
-                    print(f'\n{sub}: {[post.get("title", "") for post in newer]}\n')
-                    self.DataProcessor.load_dataset(f'{CACHE_FILEPATH}/{sub}.csv')
+                    print(
+                        f'\n{sub}: {[post.get("title", "") for post in newer]}\n')
+                    self.DataProcessor.load_dataset(
+                        f'{CACHE_FILEPATH}/{sub}.csv')
                     self.DataProcessor.append_dataset(pd.DataFrame(newer))
                     self.DataProcessor.store_dataset(name=sub)
                     latest[sub] = newer[0]['created_utc']
+                max = len(newer) if len(newer) > max else max
                 print(f'Fetched {len(newer)} newer posts from r/{sub}')
-            print("----------")
-            sleep(300) # Sleep for 5 minutes
+            print(f'----------')
+            sleep(300)  # Sleep for 5 minutes
         print("Done")
 
-    def _cache_initial(self, subreddit:str) -> None:
+    def _cache_initial(self, subreddit: str) -> None:
         print(f'Caching r/{subreddit}...')
-        data = self.ApiClient.get_posts_by_subreddit(subreddit=subreddit, count=1000)
+        data = self.ApiClient.get_posts_by_subreddit(
+            subreddit=subreddit, count=1000)
         self.DataProcessor.load_dataset(data)
-        self.DataProcessor.store_dataset(name = subreddit)
+        self.DataProcessor.store_dataset(name=subreddit)
 
     def _check_subreddits_valid(self) -> None:
         print("Checking subreddit validity...")
-        new = [subreddit for subreddit in 
-                           self.subreddits if self.ApiClient.subreddit_exists(subreddit)]
+        new = [subreddit for subreddit in
+               self.subreddits if self.ApiClient.subreddit_exists(subreddit)]
 
     def _get_cached(self) -> list[str]:
         """Lists subreddits that have an entry in CACHE_FILEPATH"""
+        """Files need to conform to the naming convention of <SUBREDDIT>.csv"""
         cached = [file.split(".")[0] for file in os.listdir(CACHE_FILEPATH)]
         return cached
+
+    def _count_gen(self):
+        count = 0
+        while True:
+            yield 1000 if count < 1 else 20
+            count += 1
+
+
 class Parameters():
     def __init__(self, subreddit: str | None = None):
         self.subreddit = subreddit

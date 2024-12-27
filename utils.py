@@ -61,3 +61,4 @@ def limit_rate(header) -> int:
 
 def get_input(prompt: str | None = None):
     return input(">> ") if prompt is None else input(f'{prompt}>> ')
+
