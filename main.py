@@ -29,11 +29,11 @@ def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--cachemode", nargs='*',help="Have redditanalyzer continously run and save posts")
-    parser.add_argument("--subreddit", type=str, help="This subreddit will be fetched on startup")
+    parser.add_argument("--sub", type=str, help="This subreddit will be fetched on startup")
     args = parser.parse_args()
     if args.cachemode is not None:
         app = CacheAppManager(ac, dp, args.cachemode)
-    if args.subreddit is not None:
+    elif args.subreddit is not None:
         app = CliAppManager(ac,dp,vi, args.subreddit)
     else:
         app = CliAppManager(ac,dp,vi)

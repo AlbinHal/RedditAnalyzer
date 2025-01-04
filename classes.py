@@ -16,8 +16,6 @@ import warnings
 
 CONFIG = "config.json"
 
-BASE_URL = "https://oauth.reddit.com/"
-
 CACHE_FILEPATH = "saved"
 
 def cached_csv_exists(sub:str) -> bool:
@@ -25,9 +23,87 @@ def cached_csv_exists(sub:str) -> bool:
         return False
     return os.path.isfile(f'{CACHE_FILEPATH}/{sub}.csv')
 
-class ApiClient():
-    """Responsible for interacting with the API, updating auth tokens."""
+class Authenticator:
+    """Handles API authentication"""
+    BASE_URL = "https://ssl.reddit.com/api/v1/access_token" 
+    def __init__(self):
+        cfg: dict = read_file(CONFIG)
+        self.user_agent = cfg['user_agent']
+        self.username = cfg['username']
+        self.__password = cfg['password']
+        self.client_id = cfg['client_id']
+        self.__client_secret = cfg['client_secret']
+        self.token = cfg['token']
+        self.token_expires = datetime.fromisoformat(cfg['token_expires'])
 
+    def token_valid(self) -> bool:
+       return self.token and self.token_expires - timedelta(hours=1) > datetime.today() 
+    
+    def update_token(self):
+        if self.token_valid():
+            return self.token
+        response = requests.post(
+            self.BASE_URL,
+            auth = HTTPBasicAuth(self.client_id, self.__client_secret),
+            data = {"grant_type": "password", "username": self.username, "password": self.__password},
+            headers = {"User-Agent": self.user_agent}
+        )        
+        data = response.json()
+        self.token = data.get("access_token")
+        self.token_expires = datetime.now() + timedelta(seconds=data.get("expires_in"))
+
+class ApiRequester:
+    BASE_URL = "https://oauth.reddit.com/"
+    def __init__(self, authenticator: Authenticator):
+        self.authenticator = authenticator
+
+    def make_request(self, endpoint, params=None):
+        token = self.authenticator.update_token()
+        headers = {"Authorization": f'bearer {token}',
+                "User-Agent": self.authenticator.user_agent}
+        response = requests.get(f'{self.BASE_URL}{endpoint}',
+                                params=params,
+                                headers=headers)
+        response.raise_for_status()
+        return response.json()
+
+
+
+class DataService:
+    """Handles retrieval of API data"""
+    def __init__(self, api_requester: ApiRequester):
+        self.api_requester = api_requester
+    def get_posts_by_subreddit(self, 
+                               subreddit:str = "sweden",
+                               subredditmode: SubRedditMode = "new",
+                               count: int = 1000,
+                               ) -> list[dict]:
+        pass 
+
+    def subreddit_exists(self, query: str) -> bool:
+        self.update_token()
+        url = f'{BASE_URL}/r/{query}/about.json'
+        response = requests.get(url=url, headers=self._generate_header())
+        data = response.json()
+        if response.status_code == 200:
+            return data.get("kind") == "t5"
+        else:
+            return False
+
+    def subreddit_autocomplete(self, query: str, show_nsfw: bool) -> list[str]:
+        """Used to search for subreddits after a given query"""
+        url = f'{BASE_URL}/api/subreddit_autocomplete'
+        params = {"query": query, "include_over_18": show_nsfw,
+                    "include_profiles": False}
+        response = requests.get(url, headers=self._generate_header(),
+                                params=params)
+        data = response.json()
+        save_json(data, f'searches/{query}_subr_search.json')
+        return [subreddit.get("name", "") for subreddit in data.get("subreddits", [])]
+
+
+class ApiClient:
+    """Responsible for interacting with the API, updating auth tokens."""
     def __init__(self):
         cfg: dict = read_file(CONFIG)
         self.__user_agent = cfg['user_agent']
@@ -205,17 +281,26 @@ class DataProcessor():
         new_str = ''.join(c.lower() for c in s if c.isalpha() or c == " ")
         return new_str
 
-    def load_dataset(self, fp: FilePath | list[dict]) -> None:
+    def load_dataset_from_list(self, fp: FilePath | list[dict]) -> bool:
         """Loads a .csv into a Dataframe, store in Dataprocessor"""
-        if type(fp) is list:
+        try:
             self.dataset = pd.DataFrame(fp).sort_values(
-                by="created_utc", ascending=False)
-            return
-        if not isfile(fp):
-            # Error msg
-            return None
-        self.dataset = pd.read_csv(fp).sort_values(
             by="created_utc", ascending=False)
+            return True
+        except:
+            return False
+        
+    def load_dataset_from_file(self, fp: FilePath) -> bool:
+        if not isFile(fp):
+            return False
+        try:
+            self.dataset = pd.read_csv(fp).sort_values(
+                by="created_utc", ascending=False
+            )
+            return True
+        except:
+            return False
+
 
     def append_dataset(self, dataset: pd.DataFrame) -> None:
         # TODO, fix (probable) bug where we try to append an all N/A dataframe.
@@ -251,6 +336,16 @@ class Visualizer():
     def draw_bargraph(self, dataset: pd.DataFrame, title: str = None) -> None:
         dataset.plot(kind='bar', title=title)
         plt.show()
+
+class AppManager():
+    def __init__(self, ApiClient: ApiClient, DataProcessor, Visualizer, Subreddit: str):
+        self.ApiClient = ApiClient
+        self.DataProcessor = DataProcessor
+        self.Visualizer = Visualizer
+        self.Subreddit = Subreddit
+
+    def run(self):
+
 
 class CliAppManager():
     def __init__(self, ApiClient: ApiClient, DataProcessor: DataProcessor, Visualizer: Visualizer, Subreddit: str | None= None):
