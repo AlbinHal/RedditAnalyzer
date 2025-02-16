@@ -1,16 +1,10 @@
 import argparse
 import logging
-from classes import ApiClient, DataProcessor, Visualizer, CliAppManager, CacheAppManager
+from classes import DataService, DataProcessor, Visualizer, CliAppManager, CacheAppManager
 
 # FLAGS
 VERBOSE = True
 GUI = False
-
-# PARAMETERS
-USER_AGENT = "RdtTrends/1.0 (Linux;Python/3.13) (by /u/SpktLaban)"
-RESPONSE_FILE = "response.txt"
-
-
 
 def print_usage():
     ...
@@ -22,7 +16,8 @@ def setup_logger(name: str = __name__) -> logging.Logger:
 
 def main():
     """Parse arguments and launch correct Manager class"""
-    ac = ApiClient()
+    #ac = ApiClient()
+    ac = DataService()
     dp = DataProcessor()
     vi = Visualizer('dark_background')
     log = setup_logger("main")

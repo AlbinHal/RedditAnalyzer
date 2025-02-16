@@ -56,8 +56,8 @@ class Authenticator:
 class ApiRequester:
     """Makes API calls, managers headers"""
     BASE_URL = "https://oauth.reddit.com/"
-    def __init__(self, authenticator: Authenticator):
-        self.authenticator = authenticator
+    def __init__(self):
+        self.authenticator = Authenticator() 
 
     def make_request(self, endpoint, params=None):
         token = self.authenticator.update_token()
@@ -67,14 +67,24 @@ class ApiRequester:
                                 params=params,
                                 headers=headers)
         response.raise_for_status()
+        self._limit_rate(response.headers)
         return response
+    
+    def _limit_rate(self, header: dict) -> None:
+        """Simply sleep if we are getting close to exceeding rate."""
+        self.remaining = header.get("x-ratelimit-remaining", 0)
+        refresh = header.get("x-ratelimit-reset", 600)
+        if float(self.remaining) < 100:
+            print("Limiting rate, sleeping...")
+            sleep(1)
+        return
 
 
 
 class DataService:
     """Provides higher level methods for interacting with the API"""
-    def __init__(self, api_requester: ApiRequester):
-        self.api_requester = api_requester
+    def __init__(self):
+        self.api_requester = ApiRequester()
     def get_posts_by_subreddit(self, 
                                subreddit:str = "sweden",
                                subredditmode: SubRedditMode = "new",
@@ -84,16 +94,24 @@ class DataService:
         n = 0
         posts = []
         endpoint = f'/r/{subreddit}/{subredditmode}'
+        
         params = {"limit": 100 if count > 100 else count}
+        page_key = 'after'
 
-        while n < count:
+        while len(posts) < count:
             response = self.api_requester.make_request(
                 endpoint, params
             )
             data = response.json()
             posts.extend([post["data"] for post in
                           data.get("data", {}).get("children", [])])
-            n += len(posts) - n
+            
+            # Stop fetching repeating content
+            params[page_key] = data['data'].get(page_key, {})
+            if params[page_key] is None:
+                break
+            # Update "after" timestamp
+            print(len(posts), params[page_key])
         ret = []
         [ret.append(post) for post in posts[:count] if post not in ret]
         return ret
@@ -116,133 +134,11 @@ class DataService:
             endpoint, params
         )
         data = response.json()
-        save_json(data, f'searches/{query}_subr_search.json')
+        # Caching for search results?
+        #save_json(data, f'searches/{query}_subr_search.json')
         return [subreddit.get("name", "") for subreddit in data.get("subreddits", [])]
 
 
-class ApiClient:
-    """Responsible for interacting with the API, updating auth tokens."""
-    def __init__(self):
-        cfg: dict = read_file(CONFIG)
-        self.__user_agent = cfg['user_agent']
-        self.__username = cfg['username']
-        self.__password = cfg['password']
-        self.__client_id = cfg['client_id']
-        self.__client_secret = cfg['client_secret']
-        self.__oauth_token = cfg['token']
-        self.oauth_expires = datetime.fromisoformat(cfg['token_expires'])
-        self.rate_remaining = 1000
-        self.update_token()
-
-    def __str__(self):
-        s = "ApiClient\n" + \
-            f'Username: {self.__username}\n' + \
-            f'Token-expires: {self.oauth_expires}'
-        return s
-
-    def get_posts_by_subreddit(self,
-                               subreddit: str = "sweden",
-                               subredditmode: SubRedditMode = "new",
-                               count: int = 1000,
-                               before: str | None = None
-                               ) -> list[dict]:
-        """Get posts from a subreddit of choice"""
-        self.update_token()
-        n = 0
-        posts = []
-        url = f'{BASE_URL}r/{subreddit}/{subredditmode}'
-        params = {"limit": 100 if count > 100 else count}
-
-        if before is not None:
-            page_key = 'before'
-            params[page_key] = before
-        else:
-            page_key = 'after'
-
-        while n < count:
-            response = requests.get(
-                url, headers=self._generate_header(), params=params)
-            if response.status_code != 200:
-                print(f'ApiClient.subreddit: Received {response.status_code}')
-                return posts
-            data = response.json()
-            posts.extend([post["data"] for post in
-                          data.get("data", {}).get("children", [])])
-            n += len(posts) - n
-            if params.get(page_key, "") == data['data'].get(page_key, ""):
-                break
-            params[page_key] = data['data'].get(page_key, {})
-            self._limit_rate(response.headers)
-        ret = []
-        [ret.append(post) for post in posts[:count] if post not in ret]
-        return ret
-
-    def subreddit_autocomplete(self, query: str, show_nsfw: bool) -> list[str]:
-        """Used to search for subreddits after a given query"""
-        url = f'{BASE_URL}/api/subreddit_autocomplete'
-        params = {"query": query, "include_over_18": show_nsfw,
-                  "include_profiles": False}
-        response = requests.get(url, headers=self._generate_header(),
-                                params=params)
-        data = response.json()
-        #save_json(data, f'searches/{query}_subr_search.json') # Cache 
-        return [subreddit.get("name", "") for subreddit in data.get("subreddits", [])]
-
-    def subreddit_exists(self, query: str) -> bool:
-        self.update_token()
-        url = f'{BASE_URL}/r/{query}/about.json'
-        response = requests.get(url=url, headers=self._generate_header())
-        data = response.json()
-        if response.status_code == 200:
-            return data.get("kind") == "t5"
-        else:
-            return False
-    # OAUTH TOKENS
-
-    def update_token(self) -> None:
-        """Checks if the oauth token has expired and updates it accordingly."""
-        if self.oauth_expires - timedelta(hours=1) > datetime.today():
-            return
-        resp = self._get_oauth_token()
-        token = resp.get("access_token")
-        time_remaining = resp['expires_in']
-        new_expires = datetime.today() + timedelta(seconds=time_remaining)
-        # Update config.json
-        updates = {"token": token, "token_expires": new_expires.isoformat()}
-        update_json(CONFIG, updates)
-        self.__oauth_token = token
-        self.oauth_expires = new_expires
-
-    def _get_oauth_token(self):
-        """Requests oauth0 token from /api/v1/access-token"""
-        auth = HTTPBasicAuth(self.__client_id, self.__client_secret)
-        data = {
-            "grant_type": "password",
-            "username": self.__username,
-            "password": self.__password
-        }
-        headers = {"User-Agent": self.__user_agent}
-        response = requests.post(
-            "https://ssl.reddit.com/api/v1/access_token",
-            auth=auth,
-            data=data,
-            headers=headers
-        )
-        return response.json()
-
-    # HELPER METHODS
-    def _generate_header(self) -> dict:
-        """Returns Auth header used in _get_oauth_token"""
-        return {"Authorization": f'bearer {self.__oauth_token}',
-                "User-Agent": self.__user_agent}
-
-    def _limit_rate(self, header: dict) -> None:
-        """Simply sleep if we are getting close to exceeding rate."""
-        self.remaining = header.get("x-ratelimit-remaining", 0)
-        refresh = header.get("x-ratelimit-reset", 600)
-        if float(self.remaining) < 100:
-            sleep(1)
-        return
 
 
 class DataProcessor():
@@ -354,18 +250,10 @@ class Visualizer():
         dataset.plot(kind='bar', title=title)
         plt.show()
 
-class AppManager():
-    def __init__(self, ApiClient: ApiClient, DataProcessor, Visualizer, Subreddit: str):
-        self.ApiClient = ApiClient
-        self.DataProcessor = DataProcessor
-        self.Visualizer = Visualizer
-        self.Subreddit = Subreddit
-
-
 
 class CliAppManager():
-    def __init__(self, ApiClient: ApiClient, DataProcessor: DataProcessor, Visualizer: Visualizer, Subreddit: str = "python"):
-        self.ApiClient = ApiClient
+    def __init__(self, DataService: DataService, DataProcessor: DataProcessor, Visualizer: Visualizer, Subreddit: str = "python"):
+        self.ApiClient = DataService
         self.DataProcessor = DataProcessor
         self.Visualizer = Visualizer
         self.Parameters = Parameters(Subreddit)
@@ -442,8 +330,8 @@ class CliAppManager():
 
 
 class CacheAppManager():
-    def __init__(self, ApiClient: ApiClient, DataProcessor: DataProcessor, subreddits: list[str]):
-        self.ApiClient = ApiClient
+    def __init__(self, DataService : DataService, DataProcessor: DataProcessor, subreddits: list[str]):
+        self.ApiClient = DataService 
         self.DataProcessor = DataProcessor
         self.subreddits = subreddits
 
