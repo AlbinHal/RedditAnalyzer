@@ -15,6 +15,7 @@ import os
 import warnings
 
 CONFIG = "config.json"
+BASE_URL = "https://oauth.reddit.com/"
 
 CACHE_FILEPATH = "saved"
 
@@ -53,6 +54,7 @@ class Authenticator:
         self.token_expires = datetime.now() + timedelta(seconds=data.get("expires_in"))
 
 class ApiRequester:
+    """Makes API calls, managers headers"""
     BASE_URL = "https://oauth.reddit.com/"
     def __init__(self, authenticator: Authenticator):
         self.authenticator = authenticator
@@ -65,12 +67,12 @@ class ApiRequester:
                                 params=params,
                                 headers=headers)
         response.raise_for_status()
-        return response.json()
+        return response
 
 
 
 class DataService:
-    """Handles retrieval of API data"""
+    """Provides higher level methods for interacting with the API"""
     def __init__(self, api_requester: ApiRequester):
         self.api_requester = api_requester
     def get_posts_by_subreddit(self, 
@@ -78,25 +80,41 @@ class DataService:
                                subredditmode: SubRedditMode = "new",
                                count: int = 1000,
                                ) -> list[dict]:
-        pass 
+        """Get posts from a subreddit of choice"""
+        n = 0
+        posts = []
+        endpoint = f'/r/{subreddit}/{subredditmode}'
+        params = {"limit": 100 if count > 100 else count}
+
+        while n < count:
+            response = self.api_requester.make_request(
+                endpoint, params
+            )
+            data = response.json()
+            posts.extend([post["data"] for post in
+                          data.get("data", {}).get("children", [])])
+            n += len(posts) - n
+        ret = []
+        [ret.append(post) for post in posts[:count] if post not in ret]
+        return ret
 
     def subreddit_exists(self, query: str) -> bool:
-        self.update_token()
-        url = f'{BASE_URL}/r/{query}/about.json'
-        response = requests.get(url=url, headers=self._generate_header())
-        data = response.json()
+        endpoint = f'/r/{query}/about.json'
+        response = self.api_requester.make_request(endpoint)
+        
         if response.status_code == 200:
-            return data.get("kind") == "t5"
+            return response.json().get("kind") == "t5"
         else:
             return False
 
     def subreddit_autocomplete(self, query: str, show_nsfw: bool) -> list[str]:
         """Used to search for subreddits after a given query"""
-        url = f'{BASE_URL}/api/subreddit_autocomplete'
+        endpoint = f'/api/subreddit_autocomplete'
         params = {"query": query, "include_over_18": show_nsfw,
                     "include_profiles": False}
-        response = requests.get(url, headers=self._generate_header(),
-                                params=params)
+        response = self.api_requester.make_request(
+            endpoint, params
+        )
         data = response.json()
         save_json(data, f'searches/{query}_subr_search.json')
         return [subreddit.get("name", "") for subreddit in data.get("subreddits", [])]
@@ -120,7 +138,6 @@ class ApiClient:
         s = "ApiClient\n" + \
             f'Username: {self.__username}\n' + \
             f'Token-expires: {self.oauth_expires}'
-
         return s
 
     def get_posts_by_subreddit(self,
@@ -168,7 +185,7 @@ class ApiClient:
         response = requests.get(url, headers=self._generate_header(),
                                 params=params)
         data = response.json()
-        save_json(data, f'searches/{query}_subr_search.json')
+        #save_json(data, f'searches/{query}_subr_search.json') # Cache 
         return [subreddit.get("name", "") for subreddit in data.get("subreddits", [])]
 
     def subreddit_exists(self, query: str) -> bool:
@@ -239,7 +256,6 @@ class DataProcessor():
             self.dataset = []
 
     def __str__(self):
-
         ...
 
     def word_count(self) -> pd.DataFrame:
@@ -291,7 +307,7 @@ class DataProcessor():
             return False
         
     def load_dataset_from_file(self, fp: FilePath) -> bool:
-        if not isFile(fp):
+        if not isfile(fp):
             return False
         try:
             self.dataset = pd.read_csv(fp).sort_values(
@@ -316,7 +332,8 @@ class DataProcessor():
         if dataset is None:
             self.dataset.to_csv(f'{CACHE_FILEPATH}/{name}.csv', index=False)
         else:
-            dataset.to_csv(f'{CACHE_FILEPATH}/{name}.csv', index=False)
+            self.load_dataset_from_list(dataset)
+            self.dataset.to_csv(f'{CACHE_FILEPATH}/{name}.csv', index=False)
 
     def dataset_remove_duplicates(self):
         self.dataset.drop_duplicates()
@@ -344,11 +361,10 @@ class AppManager():
         self.Visualizer = Visualizer
         self.Subreddit = Subreddit
 
-    def run(self):
 
 
 class CliAppManager():
-    def __init__(self, ApiClient: ApiClient, DataProcessor: DataProcessor, Visualizer: Visualizer, Subreddit: str | None= None):
+    def __init__(self, ApiClient: ApiClient, DataProcessor: DataProcessor, Visualizer: Visualizer, Subreddit: str = "python"):
         self.ApiClient = ApiClient
         self.DataProcessor = DataProcessor
         self.Visualizer = Visualizer
@@ -357,7 +373,8 @@ class CliAppManager():
 
 
     def run(self):
-        self._load_subreddit()    
+        if self.Parameters.subreddit:
+            self._load_subreddit()    
         while True:
             self._draw_main_menu()
             match get_input():
@@ -413,13 +430,13 @@ class CliAppManager():
         rprint(f'Current Subreddit: r/[{sub_color}]{self.Parameters.subreddit}')
 
     def _load_subreddit(self):
-         with self.Cli.status("Fetching posts..."):
+         with self.Cli.status(f'Fetching posts from r/{self.Parameters.subreddit}...'):
             if cached_csv_exists(self.Parameters.subreddit):
-                self.DataProcessor.load_dataset(f'{CACHE_FILEPATH}/{self.Parameters.subreddit}.csv')
+                self.DataProcessor.load_dataset_from_file(f'{CACHE_FILEPATH}/{self.Parameters.subreddit}.csv')
             else:
                 data = self.ApiClient.get_posts_by_subreddit(
                     subreddit=self.Parameters.subreddit)
-                self.DataProcessor.load_dataset(data)
+                self.DataProcessor.store_dataset(data, self.Parameters.subreddit)
     def _hold(self) -> None:
         input("Press ENTER to continue")
 

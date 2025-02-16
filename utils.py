@@ -21,6 +21,8 @@ def makedir(name:str) -> None:
 
 
 def read_file(fp: str):
+    if not os.path.isfile(fp):
+        raise FileNotFoundError("No config.json file found")
     with open(fp, "r") as file:
         data = load(file)
     return data

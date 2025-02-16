@@ -33,8 +33,8 @@ def main():
     args = parser.parse_args()
     if args.cachemode is not None:
         app = CacheAppManager(ac, dp, args.cachemode)
-    elif args.subreddit is not None:
-        app = CliAppManager(ac,dp,vi, args.subreddit)
+    elif args.sub is not None:
+        app = CliAppManager(ac,dp,vi, args.sub)
     else:
         app = CliAppManager(ac,dp,vi)
     app.run()
