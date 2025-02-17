@@ -8,6 +8,7 @@ SubRedditMode: TypeAlias = Literal["old", "new", "hot"]
 FilePath: TypeAlias = str
 Key: TypeAlias = str
 
+CACHE_FILEPATH = "saved"
 # FILE HANDLING
 def makedir(name:str) -> None:
     try:
@@ -41,6 +42,11 @@ def update_json(file_path, updates):
         data[key] = value
     # Save the updated JSON data
     save_json(data, file_path)
+
+def cached_csv_exists(sub:str) -> bool:
+    if sub is None:
+        return False
+    return os.path.isfile(f'{CACHE_FILEPATH}/{sub}.csv')
 
 # PARSING
 
